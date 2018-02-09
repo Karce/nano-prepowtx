@@ -1,1 +1,1 @@
-CHIM is a server and controller to stress test the Nano network.
+NanoBots is a P2P network to stress test the Nano network.
