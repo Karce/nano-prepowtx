@@ -24,18 +24,29 @@ import (
     "fmt"
     "net"
     "encoding/gob"
+    "sync"
     "log"
 )
+
+func main() {
+   go request("192.168.1.252:9887")
+   serv()
+}
 
 type Header struct {
     Id uint
     Action string
 }
 
-func main() {
-   go request()
-   serv()
+/*
+type SPeers struct {
+    Peers map[string]bool
 }
+*/
+
+var pLock sync.Mutex
+
+var peers = make(map[string]bool)
 
 func serv() {
     // The purpose of this function is to listen for new connections concurrently.
@@ -54,13 +65,13 @@ func serv() {
     }
 }
 
-func request() {
+func request(address string) {
     // The purpose of this function is to make requests to other nodes on the network.
     var example Header
     example.Id = 4294961111
-    example.Action = "help"
+    example.Action = "get_peers"
 
-    conn, err := net.Dial("tcp", "192.168.1.252:9887")
+    conn, err := net.Dial("tcp", address)
     if err != nil {
 	    // handle error
         fmt.Println(err)
@@ -71,6 +82,9 @@ func request() {
     if err != nil {
         log.Fatal("encode error:", err)
     }
+
+    dec := gob.NewDecoder(conn)
+    receivePeers(dec)
 }
 
 func handleConnection(conn net.Conn) {
@@ -79,6 +93,10 @@ func handleConnection(conn net.Conn) {
     // and then return that information back to the peer.
 
     fmt.Printf("...Connection Established to %s...\n", conn.RemoteAddr())
+    // Add the peer to the list of known Peers
+    pLock.Lock()
+    peers[conn.RemoteAddr().String()] = true
+    pLock.Unlock()
 
     dec := gob.NewDecoder(conn)
     // Decode (receive) the value.
@@ -89,7 +107,11 @@ func handleConnection(conn net.Conn) {
     }
 
     fmt.Println(h.Action)
-
+    enc := gob.NewEncoder(conn)
+    if (h.Action == "get_peers") {
+        relayPeers(enc)
+        fmt.Println("Relayed Peers")
+    }
     fmt.Println("...Terminating Connection...")
     err = conn.Close()
     if err != nil {
@@ -102,3 +124,42 @@ func handleConnection(conn net.Conn) {
 func relayPoW() {
     // Send the number of precached PoW's.
 }
+
+
+
+func relayPeers(enc *gob.Encoder) {
+    /*
+    pLock.Lock()
+    relayedPeers := SPeers{peers}
+    pLock.Unlock()
+
+    err := enc.Encode(relayedPeers)
+    */
+    pLock.Lock()
+    err := enc.Encode(peers)
+    pLock.Unlock()
+
+    if err != nil {
+        log.Fatal("encode error:", err)
+    }
+}
+
+func receivePeers(dec *gob.Decoder) {
+    var pMap map[string]bool
+    err := dec.Decode(&pMap)
+    if err != nil {
+        log.Fatal("decode error:", err)
+    }
+
+    pLock.Lock()
+    for k := range pMap {
+        elem, ok := peers[k]
+        if !ok && elem {
+            // Create new connections here.
+            peers[k] = true
+            go request(k)
+        }
+    }
+    pLock.Unlock()
+}
+
