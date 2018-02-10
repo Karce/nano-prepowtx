@@ -23,12 +23,14 @@ package main
 import (
     "fmt"
     "net"
+    "strings"
     "encoding/gob"
     "sync"
     "log"
 )
 
 func main() {
+    peers["192.168.1.252"] = true
    go request("192.168.1.252:9887")
    serv()
 }
@@ -95,7 +97,7 @@ func handleConnection(conn net.Conn) {
     fmt.Printf("...Connection Established to %s...\n", conn.RemoteAddr())
     // Add the peer to the list of known Peers
     pLock.Lock()
-    peers[conn.RemoteAddr().String()] = true
+    peers[strings.Split(conn.RemoteAddr().String(), ":")[0]] = true
     pLock.Unlock()
 
     dec := gob.NewDecoder(conn)
@@ -145,6 +147,7 @@ func relayPeers(enc *gob.Encoder) {
 }
 
 func receivePeers(dec *gob.Decoder) {
+    fmt.Println("Receiving Peers")
     var pMap map[string]bool
     err := dec.Decode(&pMap)
     if err != nil {
@@ -153,11 +156,14 @@ func receivePeers(dec *gob.Decoder) {
 
     pLock.Lock()
     for k := range pMap {
+        fmt.Println(k)
         elem, ok := peers[k]
-        if !ok && elem {
+        fmt.Println(elem, ok)
+        if !ok {
             // Create new connections here.
             peers[k] = true
-            go request(k)
+            fmt.Println("Got", k)
+            go request(k + ":9887")
         }
     }
     pLock.Unlock()
