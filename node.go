@@ -31,7 +31,6 @@ import (
 
 func main() {
     peers["192.168.1.252"] = true
-    go request("192.168.1.252:9887")
     TestRPC()
     serv()
 }
@@ -52,6 +51,7 @@ func serv() {
 	    // handle error
         fmt.Println(err)
     }
+    go request("192.168.1.252:9887")
     for {
 	    conn, err := ln.Accept()
 	    if err != nil {

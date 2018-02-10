@@ -28,24 +28,42 @@ import (
     "bytes"
 )
 
-type rpcRequest struct {
-    action string
+type RPCRequest struct {
+    Action string `json:"action"`
 }
 
-type block_count struct {
-    count string
-    unchecked string
+type BlockCount struct {
+    Count string `json:"count"`
+    Unchecked string `json:"unchecked"`
 }
 
 func TestRPC() {
-    req := rpcRequest{"block_count"}
-    bArr, _ := json.Marshal(req)
-    buf := bytes.NewBuffer(bArr)
-    client, _ := http.Post("localhost:2021", "text/json", buf)
+    req := RPCRequest{"block_count"}
+    bArr, err := json.Marshal(req)
+    if err != nil {
+	fmt.Println(err)
+	return
+    }
+    fmt.Println(string(bArr))
     
-    var bc block_count
-    b, _ := ioutil.ReadAll(client.Body)
+    buf := bytes.NewBuffer(bArr)
+    var client *http.Response
+    client, err = http.Post("http://localhost:2021", "text/json", buf)
+
+    if err != nil {
+	fmt.Println(err)
+	return
+    }
+    
+    var bc BlockCount
+    var b []byte
+    b, err = ioutil.ReadAll(client.Body)
+    if err != nil {
+	fmt.Println(err)
+	return
+    }
+    fmt.Println(string(b))
     json.Unmarshal(b, &bc)
 
-    fmt.Println(bc.count)
+    // fmt.Println(bc.Count, bc.Unchecked)
 }
