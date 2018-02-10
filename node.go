@@ -31,20 +31,15 @@ import (
 
 func main() {
     peers["192.168.1.252"] = true
-   go request("192.168.1.252:9887")
-   serv()
+    go request("192.168.1.252:9887")
+    TestRPC()
+    serv()
 }
 
 type Header struct {
     Id uint
     Action string
 }
-
-/*
-type SPeers struct {
-    Peers map[string]bool
-}
-*/
 
 var pLock sync.Mutex
 
@@ -73,6 +68,7 @@ func request(address string) {
     example.Id = 4294961111
     example.Action = "get_peers"
 
+    fmt.Println("Connecting to:", address)
     conn, err := net.Dial("tcp", address)
     if err != nil {
 	    // handle error
@@ -86,6 +82,7 @@ func request(address string) {
     }
 
     dec := gob.NewDecoder(conn)
+    fmt.Println("Receiving Peers from:", conn.RemoteAddr()) 
     receivePeers(dec)
 }
 
@@ -95,7 +92,7 @@ func handleConnection(conn net.Conn) {
     // and then return that information back to the peer.
 
     fmt.Printf("...Connection Established to %s...\n", conn.RemoteAddr())
-    // Add the peer to the list of known Peers
+    // Add the peer to the list of known Peers.
     pLock.Lock()
     peers[strings.Split(conn.RemoteAddr().String(), ":")[0]] = true
     pLock.Unlock()
@@ -130,13 +127,6 @@ func relayPoW() {
 
 
 func relayPeers(enc *gob.Encoder) {
-    /*
-    pLock.Lock()
-    relayedPeers := SPeers{peers}
-    pLock.Unlock()
-
-    err := enc.Encode(relayedPeers)
-    */
     pLock.Lock()
     err := enc.Encode(peers)
     pLock.Unlock()
@@ -147,7 +137,6 @@ func relayPeers(enc *gob.Encoder) {
 }
 
 func receivePeers(dec *gob.Decoder) {
-    fmt.Println("Receiving Peers")
     var pMap map[string]bool
     err := dec.Decode(&pMap)
     if err != nil {
@@ -156,13 +145,10 @@ func receivePeers(dec *gob.Decoder) {
 
     pLock.Lock()
     for k := range pMap {
-        fmt.Println(k)
-        elem, ok := peers[k]
-        fmt.Println(elem, ok)
+        _, ok := peers[k]
         if !ok {
             // Create new connections here.
             peers[k] = true
-            fmt.Println("Got", k)
             go request(k + ":9887")
         }
     }
