@@ -27,12 +27,25 @@ import (
     "encoding/gob"
     "sync"
     "log"
+    "flag"
 )
 
 func main() {
+    wallet := flag.String("wallet", "", "The wallet to sign/verify blocks")
+    nAccounts := flag.Uint("n_accounts", 100, "The number of accounts to user/generate")
+    nTransactions := flag.Uint("n_trans", 30000, "The number of transactions to generate and send")
+    flag.Parse()
+    fmt.Println("wallet:", *wallet)
+    fmt.Println("nAccounts:", *nAccounts);
+    fmt.Println("n_trans:", *nTransactions);
+    Init(*wallet);
+
     peers["192.168.1.252"] = true
-    TestRPC()
-    serv()
+    br := RPCRequest{"block_count"}
+    MakeRequest(br)
+    account := GenerateAccount();
+    fmt.Println("New Account:", account);
+    // serv()
 }
 
 type Header struct {
@@ -123,8 +136,6 @@ func handleConnection(conn net.Conn) {
 func relayPoW() {
     // Send the number of precached PoW's.
 }
-
-
 
 func relayPeers(enc *gob.Encoder) {
     pLock.Lock()
