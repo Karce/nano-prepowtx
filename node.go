@@ -28,24 +28,94 @@ import (
     "sync"
     "log"
     "flag"
+    "os"
+    "math/big"
 )
 
 func main() {
     wallet := flag.String("wallet", "", "The wallet to sign/verify blocks")
     nAccounts := flag.Uint("n_accounts", 100, "The number of accounts to user/generate")
-    nTransactions := flag.Uint("n_trans", 30000, "The number of transactions to generate and send")
+    nTransactions := flag.Uint64("n_trans", 30000, "The number of transactions to generate and send")
     flag.Parse()
     fmt.Println("wallet:", *wallet)
-    fmt.Println("nAccounts:", *nAccounts);
-    fmt.Println("n_trans:", *nTransactions);
-    Init(*wallet);
+    fmt.Println("nAccounts:", *nAccounts)
+    fmt.Println("n_trans:", *nTransactions)
+    // Init(*wallet);
 
-    peers["192.168.1.252"] = true
+    // peers["192.168.1.252"] = true
     br := RPCRequest{"block_count"}
     MakeRequest(br)
-    account := GenerateAccount();
-    fmt.Println("New Account:", account);
+    // account := GenerateAccount();
+    // fmt.Println("New Account:", account);
     // serv()
+    // *wallet = GenerateWallet()
+    if (*wallet == "") {
+        fmt.Println("Error: No wallet was provided.")
+        os.Exit(1)
+    }
+    Init(*wallet)
+
+    // GET THE NUMBER OF ACCOUNTS FOR THE WALLET
+    nWalletAccounts := uint(0)
+    accounts := AccountList()
+    for i := uint(0); i < *nAccounts; i++ {
+        if (len(accounts[i]) > 0) {
+            nWalletAccounts++
+        }
+    }
+    // GENERATE THE REMAINING ACCOUNTS
+    if (nWalletAccounts < *nAccounts) {
+        for i := nWalletAccounts; i < *nAccounts; i++ {
+            GenerateAccount()
+        }
+    }
+    // FIND FUNDS
+    total := big.NewInt(0)
+    var balances = GetBalances()
+    max := big.NewInt(0)
+    var nMax uint
+    for i := uint(0); i < *nAccounts; i++ {
+        balance := big.NewInt(0)
+        balance.SetString(balances[accounts[i]].Balance, 10)
+        if (balance.Cmp(max) > 0) {
+            max.Set(balance)
+            nMax = i
+        }
+        fmt.Println("Account:", accounts[i], "Balance:", balance)
+        total.Add(total, balance)
+    }
+    fmt.Println("Total Balance:", total)
+
+    // DISTRIBUTE FUNDS OR EXIT FOR INSUFFICIENT FUNDS
+    // minimum is nTransactions
+    minimum := big.NewInt(0)
+    minimum.SetUint64(*nTransactions)
+    if (total.Cmp(minimum) < 0) {
+        fmt.Println("Insufficient funds: you need at least", minimum, "raw. You have", total, "raw.")
+    }
+    
+    if (max.Cmp(minimum) < 0) {
+        // More complicated, compile account balances.
+    } else {
+        var length int = int(*nTransactions) / int(*nAccounts)
+        var blks []string
+        blks = make([]string, length, length)
+        amount := big.NewInt(1)
+        var hash string
+        var sBalance string
+        // CREATE BLOCKS
+        hash, sBalance, blks[0] = CreateSendBlock(accounts[nMax], accounts[0], "", amount.String(), "")
+        for i := 1; i < length; i++ {
+            cBalance := big.NewInt(0)
+            cBalance.SetString(sBalance, 10)
+            cBalance.Sub(cBalance, amount)
+            hash, sBalance, blks[i] = CreateSendBlock(accounts[nMax], accounts[0], cBalance.String(), amount.String(), hash)
+        }
+        // PROCESS BLOCKS
+        for i := 0; i < length; i++ {
+            hash = ProcessBlock(blks[i])
+        }
+    }
 }
 
 type Header struct {
