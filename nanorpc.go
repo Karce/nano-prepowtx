@@ -27,9 +27,8 @@ import (
     "encoding/json"
     "io/ioutil"
     "bytes"
+    "time"
 )
-
-var Wallet string = ""
 
 type RPCRequest struct {
     Action string `json:"action"`
@@ -40,28 +39,25 @@ type BlockCount struct {
     Unchecked string `json:"unchecked"`
 }
 
-func Init(wallet string) {
-    Wallet = wallet
-}
-
 func MakeRequest(data interface{}) ([]byte) {
     // req := RPCRequest{"block_count"}
     bArr, err := json.Marshal(data)
     if err != nil {
         fmt.Println(err)
-        os.Exit(1) 
+        os.Exit(1)
     }
-    fmt.Println(string(bArr))
-    
+    // fmt.Println(string(bArr))
     buf := bytes.NewBuffer(bArr)
     var client *http.Response
     client, err = http.Post("http://localhost:7076", "text/json", buf)
 
-    if err != nil {
+    for err != nil {
         fmt.Println(err)
-        os.Exit(1)
+        fmt.Println("Trying again in 10 seconds")
+        time.Sleep(time.Duration(10) * time.Second)
+        client, err = http.Post("http://localhost:7076", "text/json", buf)
     }
-    
+
     // var bc BlockCount
     var b []byte
     b, err = ioutil.ReadAll(client.Body)
@@ -69,7 +65,7 @@ func MakeRequest(data interface{}) ([]byte) {
         fmt.Println(err)
         os.Exit(1)
     }
-    fmt.Println(string(b))
+    // fmt.Println(string(b))
     // json.Unmarshal(b, &bc)
     // fmt.Println(bc.Count, bc.Unchecked)
     return b
@@ -89,6 +85,15 @@ type BCRequest struct {
 type BCResponse struct {
     Hash string `json:"hash"`
     Block string `json:"block"`
+}
+
+type BRRequest struct {
+    Action string `json:"action"`
+    Type string `json:"type"`
+    Wallet string `json:"wallet"`
+    Account string `json:"account"`
+    Source string `json:"source"`
+    Previous string `json:"previous"`
 }
 
 type Block struct {
@@ -132,7 +137,7 @@ type AHHistory struct {
 // Process n blocks, publishing them to the network.
 // Iterate through accounts, process one account/block at a time so the network
 // doesn't reject them.
-func CreateSendBlock(account string, dest string, balance string, amount string, previous string) (string, string, string) {
+func CreateSendBlock(account string, dest string, balance string, amount string, previous string) (string, string) {
     var req BCRequest
     req.Action = "block_create"
     req.Type = "send"
@@ -156,15 +161,7 @@ func CreateSendBlock(account string, dest string, balance string, amount string,
     // From that point keep track of the block hashes.
 
     if (previous == "") {
-        var ahr AHRequest
-        ahr.Action = "account_history"
-        ahr.Account = account
-        ahr.Count = "1"
-        c := MakeRequest(ahr)
-        var ahre AHResponse
-        json.Unmarshal(c, &ahre)
-
-        req.Previous = ahre.History[0].Hash // Previous block hash. Keep track of the last block for the account. 
+        req.Previous = GetPreviousBlock(account)
     } else {
         req.Previous = previous
     }
@@ -175,7 +172,96 @@ func CreateSendBlock(account string, dest string, balance string, amount string,
     // Unmarshal the block string here too.
     var block Block
     json.Unmarshal([]byte(bcr.Block), &block)
-    return bcr.Hash, req.Balance, bcr.Block
+    return bcr.Hash, bcr.Block
+}
+
+func CreateReceiveBlock(account string, source string, previous string) (string, string) {
+    var req BRRequest
+    req.Action = "block_create"
+    req.Type = "receive"
+    req.Wallet = Wallet
+    req.Account = account
+    req.Source = source
+
+    // Find the last block hashes with Account_List.
+    // From that point keep track of the block hashes.
+
+    if (previous == "") {
+        req.Previous = GetPreviousBlock(account)
+    } else {
+        req.Previous = previous
+    }
+    b := MakeRequest(req)
+
+    var bcr BCResponse
+    json.Unmarshal(b, &bcr)
+    // Unmarshal the block string here too.
+    var block Block
+    json.Unmarshal([]byte(bcr.Block), &block)
+    return bcr.Hash, bcr.Block
+}
+
+func GetPreviousBlock(account string) (string) {
+    var ahr AHRequest
+    ahr.Action = "account_history"
+    ahr.Account = account
+    ahr.Count = "1"
+    c := MakeRequest(ahr)
+    var ahre AHResponse
+    json.Unmarshal(c, &ahre)
+    if (len(ahre.History) >= 1) {
+        return ahre.History[0].Hash // Previous block hash. Keep track of the last block for the account. 
+    } else {
+        return ""
+    }
+}
+
+func GetPendingBlocks(account, count string) ([]string) {
+    var preq PRequest
+    preq.Action = "pending"
+    preq.Account = account
+    preq.Count = count
+
+    a := MakeRequest(preq)
+    var pr PResponse
+    json.Unmarshal(a, &pr)
+    return pr.Blocks
+}
+
+type PRequest struct {
+    Action string `json:"action"`
+    Account string `json:"account"`
+    Count string `json:"count"`
+}
+
+type PResponse struct {
+    Blocks []string `json:"blocks"`
+}
+
+type RRequest struct {
+    Action string `json:"action"`
+    Wallet string `json:"wallet"`
+    Account string `json:"account"`
+    Block string `json:"block"`
+}
+
+type RResponse struct {
+    Hash string `json:"hash"`
+}
+
+func ReceiveBlock(account string, block string) (string) {
+    var rreq RRequest
+    rreq.Action = "receive"
+    rreq.Wallet = Wallet
+    rreq.Account = account
+    rreq.Block = block
+
+    a := MakeRequest(rreq)
+
+    var rres RResponse
+    json.Unmarshal(a, &rres)
+
+    return rres.Hash
 }
 
 type PBRequest struct {
@@ -212,7 +298,6 @@ type ACRespone struct {
 // make the requests to GenerateAccounts.
 // Control the accounts that we get, keep track of them and their balance.
 func GenerateAccounts() {
-    
 }
 
 // Make a request to generate a single account with the wallet.
@@ -234,10 +319,10 @@ type ALRequest struct {
 }
 
 type ALResponse struct {
-    Accounts [100]string `json:"accounts"`
+    Accounts []string `json:"accounts"`
 }
 
-func AccountList() ([100]string) {
+func AccountList() ([]string) {
     var req ALRequest
     req.Action = "account_list"
     req.Wallet = Wallet

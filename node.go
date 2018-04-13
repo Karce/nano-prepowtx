@@ -29,93 +29,238 @@ import (
     "log"
     "flag"
     "os"
+    "math"
     "math/big"
+    "time"
 )
+
+var Wallet string
+var NAccounts uint
+var NTransactions uint64
+
+var Accounts []string
+var Balances []*big.Int
+var Total *big.Int
+
+// The number of transactions for every account.
+var TransPerAccount uint
+
+// The most recent block for every account.
+var RecentHashes []string
+
+// Blks will store all of the blocks that are created and signed offline.
+// For each account, store a slice of blocks, in order.
+// blks[account][block]
+var Blks [][]string
 
 func main() {
     wallet := flag.String("wallet", "", "The wallet to sign/verify blocks")
     nAccounts := flag.Uint("n_accounts", 100, "The number of accounts to user/generate")
     nTransactions := flag.Uint64("n_trans", 30000, "The number of transactions to generate and send")
     flag.Parse()
-    fmt.Println("wallet:", *wallet)
-    fmt.Println("nAccounts:", *nAccounts)
-    fmt.Println("n_trans:", *nTransactions)
-    // Init(*wallet);
+
+    Wallet = *wallet
+    NAccounts = *nAccounts
+    NTransactions = *nTransactions
+
+    fmt.Println("wallet:", Wallet)
+    fmt.Println("n_accounts:", NAccounts)
+    fmt.Println("n_trans:", NTransactions)
+
+    TransPerAccount  = uint(NTransactions) / NAccounts
 
     // peers["192.168.1.252"] = true
-    br := RPCRequest{"block_count"}
-    MakeRequest(br)
-    // account := GenerateAccount();
-    // fmt.Println("New Account:", account);
     // serv()
-    // *wallet = GenerateWallet()
-    if (*wallet == "") {
+    if (Wallet == "") {
         fmt.Println("Error: No wallet was provided.")
         os.Exit(1)
     }
-    Init(*wallet)
 
+    setupAccounts()
+
+    max, nMax := findFunds()
+
+    distributeFunds(max, nMax)
+
+    receiveAllPending()
+    // precomputeBlocks(nMax)
+    // processBlocks()
+}
+
+func setupAccounts() {
     // GET THE NUMBER OF ACCOUNTS FOR THE WALLET
     nWalletAccounts := uint(0)
-    accounts := AccountList()
-    for i := uint(0); i < *nAccounts; i++ {
-        if (len(accounts[i]) > 0) {
+    Accounts = AccountList()
+    for i := uint(0); i < NAccounts; i++ {
+        if (len(Accounts[i]) > 0) {
             nWalletAccounts++
         }
     }
     // GENERATE THE REMAINING ACCOUNTS
-    if (nWalletAccounts < *nAccounts) {
-        for i := nWalletAccounts; i < *nAccounts; i++ {
+    if (nWalletAccounts < NAccounts) {
+        for i := nWalletAccounts; i < NAccounts; i++ {
             GenerateAccount()
         }
     }
+}
+
+func findFunds() (*big.Int, uint) {
     // FIND FUNDS
-    total := big.NewInt(0)
-    var balances = GetBalances()
+    Total = big.NewInt(0)
+    var fakeBalances = GetBalances()
+    // Initialize the global balances for every account. This is required.
+    Balances = make([]*big.Int, NAccounts)
+    // Find the account with the most funds.
     max := big.NewInt(0)
     var nMax uint
-    for i := uint(0); i < *nAccounts; i++ {
+    for i := uint(0); i < NAccounts; i++ {
         balance := big.NewInt(0)
-        balance.SetString(balances[accounts[i]].Balance, 10)
+        balance.SetString(fakeBalances[Accounts[i]].Balance, 10)
+        Balances[i] = balance
         if (balance.Cmp(max) > 0) {
             max.Set(balance)
             nMax = i
         }
-        fmt.Println("Account:", accounts[i], "Balance:", balance)
-        total.Add(total, balance)
+        fmt.Println("Account:", Accounts[i], "Balance:", balance)
+        Total.Add(Total, balance)
     }
-    fmt.Println("Total Balance:", total)
+    fmt.Println("Total Balance:", Total)
+    return max, nMax
+}
 
+func distributeFunds(max *big.Int, nMax uint) {
     // DISTRIBUTE FUNDS OR EXIT FOR INSUFFICIENT FUNDS
-    // minimum is nTransactions
+    // minimum is NTransactions
     minimum := big.NewInt(0)
-    minimum.SetUint64(*nTransactions)
-    if (total.Cmp(minimum) < 0) {
-        fmt.Println("Insufficient funds: you need at least", minimum, "raw. You have", total, "raw.")
+    minimum.SetUint64(NTransactions)
+    if (Total.Cmp(minimum) < 0) {
+        fmt.Println("Insufficient funds: you need at least", minimum, "raw. You have", Total, "raw.")
+        os.Exit(1)
     }
-    
+
+    // GET ALL PREVIOUS BLOCKS FOR THE ACCOUNTS
+    // RecentHashes needs initialization. This is required.
+    RecentHashes = make([]string, NAccounts)
+    for i := uint(0); i < NAccounts; i++ {
+        RecentHashes[i] = GetPreviousBlock(Accounts[i])
+    }
+    amount := big.NewInt(int64(TransPerAccount))
+
+    Blks = make([][]string, NAccounts)
+    for i := uint(0); i < NAccounts; i++ {
+        Blks[i] = make([]string, TransPerAccount)
+    }
+
+    var total time.Duration
+    var count uint64
+
     if (max.Cmp(minimum) < 0) {
         // More complicated, compile account balances.
     } else {
-        var length int = int(*nTransactions) / int(*nAccounts)
-        var blks []string
-        blks = make([]string, length, length)
-        amount := big.NewInt(1)
-        var hash string
-        var sBalance string
-        // CREATE BLOCKS
-        hash, sBalance, blks[0] = CreateSendBlock(accounts[nMax], accounts[0], "", amount.String(), "")
-        for i := 1; i < length; i++ {
-            cBalance := big.NewInt(0)
-            cBalance.SetString(sBalance, 10)
-            cBalance.Sub(cBalance, amount)
-            hash, sBalance, blks[i] = CreateSendBlock(accounts[nMax], accounts[0], cBalance.String(), amount.String(), hash)
+        // SEARCH FOR ACCOUNTS THAT HAVE LESS THAN MINIMUM RAW
+        for k, account := range Accounts {
+            if (Balances[k].Cmp(amount) < 0) {
+                fmt.Print("\rProcessing Account: ", k)
+                start := time.Now()
+                // ADD MINIMUM BALANCE
+                RecentHashes[nMax], Blks[k][0] = CreateSendBlock(Accounts[nMax], account, "", Balances[k].Sub(amount, Balances[k]).String(), RecentHashes[nMax])
+                RecentHashes[nMax] = ProcessBlock(Blks[k][0])
+                // realBalances[k].SetString(sBalance, 10)
+                // RECEIVE THE BLOCK
+                RecentHashes[k], Blks[k][0] = CreateReceiveBlock(account, RecentHashes[nMax], RecentHashes[k])
+                RecentHashes[k] = ProcessBlock(Blks[k][0])
+                stop := time.Now()
+                elapsed := stop.Sub(start)
+                total += elapsed
+                count++
+                var ETA time.Duration = time.Duration((uint64(total) / count) * uint64(NAccounts - uint(k)))
+                fmt.Print(" ETA: ", ETA.String(), " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   ")
+                // fmt.Print(" ETA: ", math.Floor(ETA.Hours()), ":", int64(math.Floor(ETA.Minutes())) % 60, ":", int64(math.Floor(ETA.Seconds())) % 60, " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate))
+             }
         }
-        // PROCESS BLOCKS
-        for i := 0; i < length; i++ {
-            hash = ProcessBlock(blks[i])
+        fmt.Println()
+    }
+    fmt.Println("---Finished Setting Up Accounts---")
+}
+
+func precomputeBlocks(nMax uint) {
+    // ITERATE OVER EACH ACCOUNT
+    // CREATE BLOCKS
+    var ETA time.Duration
+    var total time.Duration
+    var count uint64
+    fmt.Println("---Begin Precomputing PoW (Send Blocks)---")
+    amount := big.NewInt(1)
+    for i := uint(0); i < TransPerAccount; i++ {
+        for k, account := range Accounts {
+            fmt.Print("\rBlock: ", count, "/", NTransactions, ", ", math.Floor((float64(count) / float64(NTransactions) * 1000)) / 10, "%")
+            fmt.Print(" ETA: ", ETA.String(), " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   ")
+            // fmt.Print(" ETA: ", math.Floor(ETA.Hours()), ":", int64(math.Floor(ETA.Minutes())) % 60, ":", int64(math.Floor(ETA.Seconds())) % 60, " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   ")
+            start := time.Now()
+            RecentHashes[k], Blks[k][i] = CreateSendBlock(account, Accounts[nMax], (Balances[k].Sub(Balances[k], amount)).String(), amount.String(), RecentHashes[k])
+            stop := time.Now()
+            elapsed := stop.Sub(start)
+            total += elapsed
+            count++
+            ETA = time.Duration((uint64(total) / count) * (NTransactions - count))
         }
     }
+    fmt.Println()
+    fmt.Println("---Finished Precomputing Blocks---")
+}
+
+func processBlocks() {
+    // PROCESS BLOCKS
+    fmt.Println("---Begin Stress Test (Publishing Blocks)---")
+    var count uint64
+    for i := uint(0); i < TransPerAccount; i++ {
+        for k, _ := range Accounts {
+            fmt.Print("\rBlock: ", count, "/", NTransactions, ", ", math.Floor((float64(count) / float64(NTransactions) * 1000)) / 10, "%")
+            RecentHashes[k] = ProcessBlock(Blks[k][i])
+            count++
+        }
+    }
+    fmt.Println()
+}
+
+func receiveAllPending() {
+    for _, account := range Accounts {
+        // Later, do not just blindly call this but filter it
+        // by only calling when there are actually pending blocks
+        // on the account.
+        receivePending(account)
+    }
+
+}
+
+func receivePending(account string) {
+    // GET ALL PENDING SOURCE BLOCKS FOR ACCOUNT
+    fmt.Println("Receiving Blocks for Account: ", account)
+    var total time.Duration
+    var count uint64
+
+    var hash string = GetPreviousBlock(account)
+    var pending []string = GetPendingBlocks(account, "100")
+    for len(pending) > 0 {
+        for i := 0; i < len(pending); i++ {
+            start := time.Now()
+            hash = receivePendingBlock(account, pending[i], hash)
+            stop := time.Now()
+            elapsed := stop.Sub(start)
+            total += elapsed
+            count++
+            average := time.Duration(uint64(total) / count)
+            fmt.Print("\rBlock: ", i + 1, "/", len(pending), ", Time/Receive (TPS): ", average.String())
+        }
+        pending = GetPendingBlocks(account, "100")
+    }
+}
+
+func receivePendingBlock(account, source, previous string) (string) {
+    var block string
+    _, block = CreateReceiveBlock(account, source, previous)
+    hash := ProcessBlock(block)
+    return hash
 }
 
 type Header struct {
@@ -165,7 +310,7 @@ func request(address string) {
     }
 
     dec := gob.NewDecoder(conn)
-    fmt.Println("Receiving Peers from:", conn.RemoteAddr()) 
+    fmt.Println("Receiving Peers from:", conn.RemoteAddr())
     receivePeers(dec)
 }
 
