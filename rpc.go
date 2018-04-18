@@ -238,6 +238,35 @@ type PResponse struct {
     Blocks []string `json:"blocks"`
 }
 
+type SRequest struct {
+    Action string `json:"action"`
+    Wallet string `json:"wallet"`
+    Source string `json:"source"`
+    Destination string `json:"destination"`
+    Amount string `json:"amount"`
+}
+
+type SResponse struct {
+    Block string `json:"block"`
+}
+
+func Send(source, destination, amount string) (string) {
+    var sreq SRequest
+    sreq.Action = "send"
+    sreq.Wallet = Wallet
+    sreq.Source = source
+    sreq.Destination = destination
+    sreq.Amount = amount
+
+    a := MakeRequest(sreq)
+
+    var sres SResponse
+    json.Unmarshal(a, &sres)
+
+    return sres.Block
+
+}
+
 type RRequest struct {
     Action string `json:"action"`
     Wallet string `json:"wallet"`
