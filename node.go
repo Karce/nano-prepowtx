@@ -33,7 +33,6 @@ import (
     "math/big"
     "time"
     "strconv"
-    "crypto/rand"
 )
 
 var Wallet string
@@ -56,8 +55,9 @@ var RecentHashes []string
 var Blks [][]string
 
 var tCompute time.Duration
+var LastPoWMax uint64
 
-var Uid *big.Int
+// var Uid *big.Int
 
 func main() {
     wallet := flag.String("wallet", "", "The wallet to sign/verify blocks")
@@ -92,16 +92,11 @@ func main() {
     // network functions of the node with the computing side of the node.
     naw := make(chan string)
 
-    // Create the Uid, if it doesn't exist.
-    var maxUid *big.Int
-    maxUid.SetString("1000000000", 10)
-    Uid, _ = rand.Int(rand.Reader, maxUid)
-
     // Serv will handle all incoming connections.
-    go serv()
+    // go serv()
 
-    // peers["192.168.1.252"] = true
-    // go request("192.168.1.252:9887")
+    // peers["127.0.0.1"] = true
+    // go request("127.0.0.1", "get_peers")
 
     // From this point, coordinate communications between the network and the precomputing work.
     // A good number to attempt to hit on the network is 7,000 Transactions Per Second.
@@ -140,8 +135,8 @@ func main() {
             // Some error
             os.Exit(1)
         }
-        countMax, _ := strconv.ParseUint(<-naw, 10, 64)
-        processBlocks(countMax)
+        LastPoWMax, _ = strconv.ParseUint(<-naw, 10, 64)
+        processBlocks(LastPoWMax)
     }
 }
 
@@ -351,7 +346,7 @@ func receivePendingBlock(account, source, previous string) (string) {
 // Action - The action of the request
 type Header struct {
     Version uint
-    Uid *big.Int
+    // Uid *big.Int
     Action string
 }
 
@@ -377,17 +372,17 @@ func serv() {
     }
 }
 
-func request(address string) {
+func request(address, action string) {
     // The purpose of this function is to make requests to other nodes on the network.
     if (address == myAddress) {
         // Don't make requests to ourselves.
         return
     }
+    address += ":9887"
 
-    var example Header
-    example.Version = 2
-    example.Uid = Uid
-    example.Action = "get_peers"
+    var request Header
+    request.Version = 3
+    request.Action = action
 
     fmt.Println("Connecting to:", address)
     conn, err := net.Dial("tcp", address)
@@ -395,16 +390,23 @@ func request(address string) {
 	    // handle error
         fmt.Println(err)
     }
+    if (myAddress == "") {
+        myAddress = strings.Split(conn.LocalAddr().String(), ":")[0]
+        fmt.Println("My Address:", myAddress)
+    }
 
     enc := gob.NewEncoder(conn)
-    err = enc.Encode(example)
+    err = enc.Encode(request)
     if err != nil {
         log.Fatal("encode error:", err)
     }
-
-    dec := gob.NewDecoder(conn)
-    fmt.Println("Receiving Peers from:", conn.RemoteAddr())
-    receivePeers(dec)
+    switch action {
+    case "get_peers":
+        dec := gob.NewDecoder(conn)
+        fmt.Println("Receiving Peers from:", conn.RemoteAddr())
+        receivePeers(dec)
+    case "relay_pow":
+    }
 }
 
 func handleConnection(conn net.Conn) {
@@ -429,10 +431,6 @@ func handleConnection(conn net.Conn) {
     fmt.Println(h.Action)
     enc := gob.NewEncoder(conn)
     if (h.Action == "get_peers") {
-        if (h.Uid.Cmp(Uid) == 0) {
-            fmt.Println("Found myself")
-            myAddress = conn.RemoteAddr().String()
-        }
         relayPeers(enc)
         fmt.Println("Relayed Peers")
     }
@@ -444,9 +442,17 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
+/*
 func relayPoW() {
     // Send the number of precached PoW's.
+    for k, v := range peers {
+        // If haven't received the most recent PoWs from peer
+        if (!PoWs[k]) {
+            go request(k, "relay_pow")
+        }
+    }
 }
+*/
 
 func relayPeers(enc *gob.Encoder) {
     pLock.Lock()
@@ -471,7 +477,7 @@ func receivePeers(dec *gob.Decoder) {
         if !ok {
             // Create new connections here.
             peers[k] = true
-            go request(k + ":9887")
+            go request(k, "get_peers")
         }
     }
     pLock.Unlock()
