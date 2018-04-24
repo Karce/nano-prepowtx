@@ -23,9 +23,7 @@ package main
 import (
     "fmt"
     "net"
-    "strings"
     "encoding/gob"
-    "sync"
     "log"
     "flag"
     "os"
@@ -33,9 +31,11 @@ import (
     "math/big"
     "time"
     "strconv"
+    "crypto/rand"
 )
 
 var Wallet string
+// TODO: Replace NAccounts and NTransactions dynamically.
 var NAccounts uint
 var NTransactions uint64
 
@@ -54,10 +54,11 @@ var RecentHashes []string
 // blks[account][block]
 var Blks [][]string
 
-var tCompute time.Duration
 var LastPoWMax uint64
+var TPS float64
+var NextTest time.Time
 
-// var Uid *big.Int
+var Uid *big.Int
 
 func main() {
     wallet := flag.String("wallet", "", "The wallet to sign/verify blocks")
@@ -79,8 +80,6 @@ func main() {
         fmt.Println("Error: No wallet was provided.")
         os.Exit(1)
     }
-    // The total time to take to precompute a round of blocks.
-    tCompute = 4 * time.Hour
 
     setupAccounts()
 
@@ -92,11 +91,9 @@ func main() {
     // network functions of the node with the computing side of the node.
     naw := make(chan string)
 
-    // Serv will handle all incoming connections.
-    // go serv()
-
-    // peers["127.0.0.1"] = true
-    // go request("127.0.0.1", "get_peers")
+    var maxUid *big.Int = big.NewInt(0)
+    maxUid.SetString("1000000000", 10)
+    Uid, _ = rand.Int(rand.Reader, maxUid)
 
     // From this point, coordinate communications between the network and the precomputing work.
     // A good number to attempt to hit on the network is 7,000 Transactions Per Second.
@@ -106,25 +103,13 @@ func main() {
     // For bootstrapping new nodes, they should attempt to connect to other nodes
     // and ask for the current tCompute (perhaps taking an average).
     for {
-        // if time.Now.Hours() < i * tCompute
-        // duration = (i * tCompute - time.Now) // This is the next time slot.
-        cTime := time.Now().UTC()
-        var nextTest time.Time
-        var timeToTest time.Duration
-
-        for i := 0.0; i * tCompute.Hours() <= 24.0; i++ {
-            if (float64(cTime.Hour()) < i * tCompute.Hours()) {
-                loc, _ := time.LoadLocation("UTC")
-                nextTest = time.Date(cTime.Year(), cTime.Month(), cTime.Day(), int(i * tCompute.Hours()), 0, 0, 0, loc)
-                timeToTest = nextTest.Sub(cTime)
-                break
-            }
-        }
-        fmt.Println("Next Attack Scheduled:", nextTest.Local().Format(time.UnixDate))
-
         go precomputeBlocks(naw, nMax)
 
+        request("155.97.232.113", "relay_tps")
+
+        timeToTest := time.Until(NextTest)
         time.Sleep(timeToTest)
+
         fmt.Println("\n---Scheduled Time Reached---")
 
         // Halt the PoW and begin processing transactions.
@@ -136,7 +121,16 @@ func main() {
             os.Exit(1)
         }
         LastPoWMax, _ = strconv.ParseUint(<-naw, 10, 64)
+        // Time this function to determine the transactions published per second.
+        // If the time it takes is over a certain threshold then the network is
+        // a bottleneck and increasing the time to precompute would be meaningless.
+        start := time.Now()
         processBlocks(LastPoWMax)
+        stop := time.Now()
+        elapsed := stop.Sub(start)
+        TPS = float64(LastPoWMax) / elapsed.Seconds()
+        fmt.Println("Average Transaction per Second:", TPS)
+
     }
 }
 
@@ -262,7 +256,8 @@ func precomputeBlocks(naw chan string, nMax uint) {
             fmt.Print("\rBlock: ", count, "/", NTransactions, ", ", math.Floor((float64(count) / float64(NTransactions) * 1000)) / 10, "%")
             fmt.Print(" ETA: ", ETA.String(), " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   \r")
             start := time.Now()
-            RecentHashes[k], Blks[k][i] = CreateSendBlock(account, Accounts[nMax], (Balances[k].Sub(Balances[k], amount)).String(), amount.String(), RecentHashes[k])
+            RecentHashes[k], Blks[k][i] = CreateSendBlock(account, Accounts[nMax], Balances[k].String(), amount.String(), RecentHashes[k])
+            Balances[k].Sub(Balances[k], amount)
             stop := time.Now()
             elapsed := stop.Sub(start)
             total += elapsed
@@ -346,42 +341,18 @@ func receivePendingBlock(account, source, previous string) (string) {
 // Action - The action of the request
 type Header struct {
     Version uint
-    // Uid *big.Int
+    Uid *big.Int
     Action string
 }
 
-var pLock sync.Mutex
-
-var peers = make(map[string]bool)
-var myAddress string
-
-func serv() {
-    // The purpose of this function is to listen for new connections concurrently.
-    ln, err := net.Listen("tcp", ":9887")
-    if err != nil {
-	    // handle error
-        fmt.Println(err)
-    }
-    for {
-	    conn, err := ln.Accept()
-	    if err != nil {
-		    // handle error
-            fmt.Println(err)
-	    }
-	    go handleConnection(conn)
-    }
-}
-
 func request(address, action string) {
-    // The purpose of this function is to make requests to other nodes on the network.
-    if (address == myAddress) {
-        // Don't make requests to ourselves.
-        return
-    }
+    // The purpose of this function is to make requests to the centralized server.
+
     address += ":9887"
 
     var request Header
-    request.Version = 3
+    request.Version = 4
+    request.Uid = Uid
     request.Action = action
 
     fmt.Println("Connecting to:", address)
@@ -390,97 +361,23 @@ func request(address, action string) {
 	    // handle error
         fmt.Println(err)
     }
-    if (myAddress == "") {
-        myAddress = strings.Split(conn.LocalAddr().String(), ":")[0]
-        fmt.Println("My Address:", myAddress)
-    }
 
     enc := gob.NewEncoder(conn)
     err = enc.Encode(request)
     if err != nil {
         log.Fatal("encode error:", err)
     }
-    switch action {
-    case "get_peers":
-        dec := gob.NewDecoder(conn)
-        fmt.Println("Receiving Peers from:", conn.RemoteAddr())
-        receivePeers(dec)
-    case "relay_pow":
-    }
-
-    }
-
-func handleConnection(conn net.Conn) {
-    // This function handles requests.
-    // It will read the message header, determine the action to take, 
-    // and then return that information back to the peer.
-
-    fmt.Printf("...Connection Established to %s...\n", conn.RemoteAddr())
-    // Add the peer to the list of known Peers.
-    pLock.Lock()
-    peers[strings.Split(conn.RemoteAddr().String(), ":")[0]] = true
-    pLock.Unlock()
-
     dec := gob.NewDecoder(conn)
-    // Decode (receive) the value.
-    var h Header
-    err := dec.Decode(&h)
-    if err != nil {
-        log.Fatal("decode error:", err)
-    }
-
-    fmt.Println(h.Action)
-    enc := gob.NewEncoder(conn)
-    if (h.Action == "get_peers") {
-        relayPeers(enc)
-        fmt.Println("Relayed Peers")
-    }
-    fmt.Println("...Terminating Connection...")
-    err = conn.Close()
-    if err != nil {
-	    // handle error
-        fmt.Println(err)
-	}
-}
-
-/*
-func relayPoW() {
-    // Send the number of precached PoW's.
-    for k, v := range peers {
-        // If haven't received the most recent PoWs from peer
-        if (!PoWs[k]) {
-            go request(k, "relay_pow")
+    switch action {
+    case "relay_tps":
+        // Send the TPS.
+        err = enc.Encode(TPS)
+        if err != nil {
+            log.Fatal("encode error:", err)
+        }
+        err = dec.Decode(&NextTest)
+        if err != nil {
+            log.Fatal("encode error:", err)
         }
     }
 }
-*/
-
-func relayPeers(enc *gob.Encoder) {
-    pLock.Lock()
-    err := enc.Encode(peers)
-    pLock.Unlock()
-
-    if err != nil {
-        log.Fatal("encode error:", err)
-    }
-}
-
-func receivePeers(dec *gob.Decoder) {
-    var pMap map[string]bool
-    err := dec.Decode(&pMap)
-    if err != nil {
-        log.Fatal("decode error:", err)
-    }
-
-    pLock.Lock()
-    for k := range pMap {
-        _, ok := peers[k]
-        if !ok {
-            // Create new connections here.
-            peers[k] = true
-            go request(k, "get_peers")
-        }
-    }
-    pLock.Unlock()
-}
-
