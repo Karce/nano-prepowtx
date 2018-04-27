@@ -30,23 +30,28 @@ import (
     "time"
 )
 
+/*
+ * This file is split up between json structs and functions that supply those structs.
+ * MakeRequest and Unmarshal deal with handling generic requests and responses.
+ * The other functions are designed specifically to handle their specific request
+ * but most of them follow the same basic structure.
+ */
+
+// Any request that is only a single action.
 type RPCRequest struct {
     Action string `json:"action"`
 }
 
-type BlockCount struct {
-    Count string `json:"count"`
-    Unchecked string `json:"unchecked"`
-}
-
+// MakeRequest handles any json struct and sends those requests over
+// HTTP POST to the nano-node server.
+// It then reads the response body and returns it as a byte array.
 func MakeRequest(data interface{}) ([]byte) {
-    // req := RPCRequest{"block_count"}
     bArr, err := json.Marshal(data)
     if err != nil {
         fmt.Println(err)
         os.Exit(1)
     }
-    // fmt.Println(string(bArr))
+
     buf := bytes.NewBuffer(bArr)
     var client *http.Response
     client, err = http.Post("http://localhost:7076", "text/json", buf)
@@ -58,20 +63,33 @@ func MakeRequest(data interface{}) ([]byte) {
         client, err = http.Post("http://localhost:7076", "text/json", buf)
     }
 
-    // var bc BlockCount
     var b []byte
     b, err = ioutil.ReadAll(client.Body)
     if err != nil {
         fmt.Println(err)
         os.Exit(1)
     }
-    // fmt.Println(string(b))
-    // json.Unmarshal(b, &bc)
-    // fmt.Println(bc.Count, bc.Unchecked)
+
     return b
 }
 
-type BCRequest struct {
+// Wrapper for json.Unmarshal that handles errors.
+func Unmarshal(data []byte, v interface{}) {
+    err := json.Unmarshal(data, v)
+    if (err != nil) {
+        fmt.Println(err)
+        os.Exit(1)
+    }
+}
+
+// Block count request.
+type BlockCount struct {
+    Count string `json:"count"`
+    Unchecked string `json:"unchecked"`
+}
+
+// Create send block request.
+type BSRequest struct {
     Action string `json:"action"`
     Type string `json:"type"`
     Wallet string `json:"wallet"`
@@ -82,11 +100,7 @@ type BCRequest struct {
     Previous string `json:"previous"`
 }
 
-type BCResponse struct {
-    Hash string `json:"hash"`
-    Block string `json:"block"`
-}
-
+// Create receive block request.
 type BRRequest struct {
     Action string `json:"action"`
     Type string `json:"type"`
@@ -94,6 +108,12 @@ type BRRequest struct {
     Account string `json:"account"`
     Source string `json:"source"`
     Previous string `json:"previous"`
+}
+
+// Create block response.
+type BCResponse struct {
+    Hash string `json:"hash"`
+    Block string `json:"block"`
 }
 
 type Block struct {
@@ -105,11 +125,82 @@ type Block struct {
     Signature string `json:"signature"`
 }
 
+// Account balance request.
 type ABRequest struct {
     Action string `json:"action"`
     Account string `json:"account"`
 }
 
+func CreateSendBlock(account string, dest string, balance string, amount string, previous string) (string, string) {
+    bsreq := BSRequest{"block_create", "send", Wallet, account, dest, balance, amount, previous}
+
+    // Get the balance if it is unknown.
+    if (balance == "") {
+        abreq := ABRequest{"account_balance", account}
+
+        a := MakeRequest(abreq)
+
+        var wab WABalance
+        Unmarshal(a, &wab)
+        // The current balance of the account before this transaction.
+        bsreq.Balance = wab.Balance
+    }
+
+    // Find the last block hashes with Account_List if it is unknown.
+    // From that point keep track of the block hashes.
+
+    if (previous == "") {
+        bsreq.Previous = GetPreviousBlock(account)
+    }
+
+    a := MakeRequest(bsreq)
+
+    var bcres BCResponse
+    Unmarshal(a, &bcres)
+
+    return bcres.Hash, bcres.Block
+}
+
+func CreateReceiveBlock(account string, source string, previous string) (string, string) {
+    brreq := BRRequest{"block_create", "receive", Wallet, account, source, previous}
+
+    // Find the last block hashes with Account_List if it is unknown.
+    // From that point keep track of the block hashes.
+
+    if (previous == "") {
+        brreq.Previous = GetPreviousBlock(account)
+    }
+
+    a := MakeRequest(brreq)
+
+    var bcres BCResponse
+    Unmarshal(a, &bcres)
+
+    return bcres.Hash, bcres.Block
+}
+
+// Process block request and response.
+type PBRequest struct {
+    Action string `json:"action"`
+    Block string `json:"block"`
+}
+
+type PBResponse struct {
+    Hash string `json:"hash"`
+}
+
+func ProcessBlock(blk string) (string) {
+    pbreq := PBRequest{"process", blk}
+
+    a := MakeRequest(pbreq)
+
+    var pbres PBResponse
+    Unmarshal(a, &pbres)
+
+    return pbres.Hash
+}
+
+// Account history request and response.
 type AHRequest struct {
     Action string `json:"action"`
     Account string `json:"account"`
@@ -127,107 +218,22 @@ type AHHistory struct {
     Amount string `json:"amount"`
 }
 
-// Use wallet/generate wallet.
-// Search for xrb on wallet accounts using wallet_balances.
-// Generate accounts until have enough (100) with accounts_create. Search by accounts_list.
-// Send enough from the first account to the other accounts. On Block Lattice. Build send and process, republish if didn't work. 30000 / 100 = raw per account, 300 transactions per block.
-// Retrieve frontier block on accounts with account_info.
-// Generate a single account to be used as the destination account.
-// Begin generating n blocks per account. Store them.
-// Process n blocks, publishing them to the network.
-// Iterate through accounts, process one account/block at a time so the network
-// doesn't reject them.
-func CreateSendBlock(account string, dest string, balance string, amount string, previous string) (string, string) {
-    var req BCRequest
-    req.Action = "block_create"
-    req.Type = "send"
-    req.Wallet = Wallet
-    req.Account = account
-    req.Destination = dest
-    // Get balance
-    if (balance == "") {
-        var abr ABRequest
-        abr.Action = "account_balance"
-        abr.Account = account
-        a := MakeRequest(abr)
-        var wab WABalance
-        json.Unmarshal(a, &wab)
-        req.Balance = wab.Balance // The current balance of the account before this transaction. Can retrieve this and keep track of it.
-    } else {
-        req.Balance = balance
-    }
-    req.Amount = amount
-    // Find the last block hashes with Account_List.
-    // From that point keep track of the block hashes.
-
-    if (previous == "") {
-        req.Previous = GetPreviousBlock(account)
-    } else {
-        req.Previous = previous
-    }
-    b := MakeRequest(req)
-
-    var bcr BCResponse
-    json.Unmarshal(b, &bcr)
-    // Unmarshal the block string here too.
-    var block Block
-    json.Unmarshal([]byte(bcr.Block), &block)
-    return bcr.Hash, bcr.Block
-}
-
-func CreateReceiveBlock(account string, source string, previous string) (string, string) {
-    var req BRRequest
-    req.Action = "block_create"
-    req.Type = "receive"
-    req.Wallet = Wallet
-    req.Account = account
-    req.Source = source
-
-    // Find the last block hashes with Account_List.
-    // From that point keep track of the block hashes.
-
-    if (previous == "") {
-        req.Previous = GetPreviousBlock(account)
-    } else {
-        req.Previous = previous
-    }
-    b := MakeRequest(req)
-
-    var bcr BCResponse
-    json.Unmarshal(b, &bcr)
-    // Unmarshal the block string here too.
-    var block Block
-    json.Unmarshal([]byte(bcr.Block), &block)
-    return bcr.Hash, bcr.Block
-}
-
 func GetPreviousBlock(account string) (string) {
-    var ahr AHRequest
-    ahr.Action = "account_history"
-    ahr.Account = account
-    ahr.Count = "1"
-    c := MakeRequest(ahr)
-    var ahre AHResponse
-    json.Unmarshal(c, &ahre)
-    if (len(ahre.History) >= 1) {
-        return ahre.History[0].Hash // Previous block hash. Keep track of the last block for the account. 
+    ahreq := AHRequest{"account_history", account, "1"}
+
+    a := MakeRequest(ahreq)
+
+    var ahres AHResponse
+    Unmarshal(a, &ahres)
+
+    if (len(ahres.History) >= 1) {
+        return ahres.History[0].Hash // Previous block hash. Keep track of the last block for the account. 
     } else {
         return ""
     }
 }
 
-func GetPendingBlocks(account, count string) ([]string) {
-    var preq PRequest
-    preq.Action = "pending"
-    preq.Account = account
-    preq.Count = count
-
-    a := MakeRequest(preq)
-    var pr PResponse
-    json.Unmarshal(a, &pr)
-    return pr.Blocks
-}
-
+// Pending block request and response.
 type PRequest struct {
     Action string `json:"action"`
     Account string `json:"account"`
@@ -238,6 +244,18 @@ type PResponse struct {
     Blocks []string `json:"blocks"`
 }
 
+func GetPendingBlocks(account, count string) ([]string) {
+    preq := PRequest{"pending", account, count}
+
+    a := MakeRequest(preq)
+
+    var pres PResponse
+    Unmarshal(a, &pres)
+
+    return pres.Blocks
+}
+
+// Send request and response.
 type SRequest struct {
     Action string `json:"action"`
     Wallet string `json:"wallet"`
@@ -251,22 +269,17 @@ type SResponse struct {
 }
 
 func Send(source, destination, amount string) (string) {
-    var sreq SRequest
-    sreq.Action = "send"
-    sreq.Wallet = Wallet
-    sreq.Source = source
-    sreq.Destination = destination
-    sreq.Amount = amount
+    sreq := SRequest{"send", Wallet, source, destination, amount}
 
     a := MakeRequest(sreq)
 
     var sres SResponse
-    json.Unmarshal(a, &sres)
+    Unmarshal(a, &sres)
 
     return sres.Block
-
 }
 
+// Receive block request and response.
 type RRequest struct {
     Action string `json:"action"`
     Wallet string `json:"wallet"`
@@ -279,41 +292,17 @@ type RResponse struct {
 }
 
 func ReceiveBlock(account string, block string) (string) {
-    var rreq RRequest
-    rreq.Action = "receive"
-    rreq.Wallet = Wallet
-    rreq.Account = account
-    rreq.Block = block
+    rreq := RRequest{"receive", Wallet, account, block}
 
     a := MakeRequest(rreq)
 
     var rres RResponse
-    json.Unmarshal(a, &rres)
+    Unmarshal(a, &rres)
 
     return rres.Hash
 }
 
-type PBRequest struct {
-    Action string `json:"action"`
-    Block string `json:"block"`
-}
-
-type PBResponse struct {
-    Hash string `json:"hash"`
-}
-
-func ProcessBlock(blk string) (string) {
-    var pbr PBRequest
-    pbr.Action = "process"
-    pbr.Block = blk
-    a := MakeRequest(pbr)
-
-    var pbh PBResponse
-    json.Unmarshal(a, &pbh)
-
-    return pbh.Hash
-}
-
+// Account create request and response.
 type ACRequest struct {
     Action string `json:"action"`
     Wallet string `json:"wallet"`
@@ -323,25 +312,21 @@ type ACRespone struct {
     Account string `json:account"`
 }
 
-// Logic to control how many accounts to generate. If we need 100 accounts,
-// make the requests to GenerateAccounts.
-// Control the accounts that we get, keep track of them and their balance.
-func GenerateAccounts() {
-}
-
 // Make a request to generate a single account with the wallet.
 func GenerateAccount() (string) {
-   var req ACRequest
-   req.Action = "account_create"
-   req.Wallet = Wallet
+   acreq := ACRequest{"account_create", Wallet}
 
-   a := MakeRequest(req)
+   a := MakeRequest(acreq)
 
-   var acr ACRespone
-   json.Unmarshal(a, &acr)
-   return acr.Account
+   var acres ACRespone
+   Unmarshal(a, &acres)
+
+   return acres.Account
 }
 
+func GenerateAccounts() {}
+
+// Account list request and response.
 type ALRequest struct {
     Action string `json:"action"`
     Wallet string `json:"wallet"`
@@ -352,36 +337,33 @@ type ALResponse struct {
 }
 
 func AccountList() ([]string) {
-    var req ALRequest
-    req.Action = "account_list"
-    req.Wallet = Wallet
+    alreq := ALRequest{"account_list", Wallet}
 
-    a := MakeRequest(req)
+    a := MakeRequest(alreq)
 
-    var alr ALResponse
-    json.Unmarshal(a, &alr)
-    return alr.Accounts
+    var alres ALResponse
+    Unmarshal(a, &alres)
+
+    return alres.Accounts
 }
 
-type WCRequest struct {
-    Action string `json:"action"`
-}
-
+// Wallet create response.
 type WCResponse struct {
     Wallet string `json:"wallet"`
 }
 
 func GenerateWallet() (string) {
-    var req WCRequest
-    req.Action = "wallet_create"
+    wcreq := RPCRequest{"wallet_create"}
 
-    a := MakeRequest(req)
+    a := MakeRequest(wcreq)
 
-    var wcr WCResponse
-    json.Unmarshal(a, &wcr)
-    return wcr.Wallet
+    var wcres WCResponse
+    Unmarshal(a, &wcres)
+
+    return wcres.Wallet
 }
 
+// Wallet account balances request and response.
 type WARequest struct {
     Action string `json:"action"`
     Wallet string `json:"wallet"`
@@ -397,13 +379,12 @@ type WABalance struct {
 }
 
 func GetBalances() (map[string]WABalance) {
-    var req WARequest
-    req.Action = "wallet_balances"
-    req.Wallet = Wallet
+    req := WARequest{"wallet_balances", Wallet}
 
     a := MakeRequest(req)
 
-    var war WAResponse
-    json.Unmarshal(a, &war)
-    return war.Balances
+    var wares WAResponse
+    Unmarshal(a, &wares)
+
+    return wares.Balances
 }
