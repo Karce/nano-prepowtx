@@ -1,20 +1,20 @@
 /*
  * Copyright (C) 2018 Keaton Bruce
  *
- * This file is part of NanoBots.
+ * This file is part of nano-prepowtx.
  *
- * NanoBots is free software: you can redistribute it and/or modify
+ * nano-prepowtx is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * NanoBots is distributed in the hope that it will be useful,
+ * nano-prepowtx is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with NanoBots. If not, see <http://www.gnu.org/licenses/>.
+ * along with nano-prepowtx. If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -51,6 +51,7 @@ func MakeRequest(data interface{}) ([]byte) {
         fmt.Println(err)
         os.Exit(1)
     }
+    //fmt.Println(string(bArr))
 
     buf := bytes.NewBuffer(bArr)
     var client *http.Response
@@ -69,12 +70,24 @@ func MakeRequest(data interface{}) ([]byte) {
         fmt.Println(err)
         os.Exit(1)
     }
+    //fmt.Println(string(b))
 
     return b
 }
 
+type EResponse struct {
+	Error string `json:"error"`
+}
+
 // Wrapper for json.Unmarshal that handles errors.
 func Unmarshal(data []byte, v interface{}) {
+	var eres EResponse
+	json.Unmarshal(data, &eres)
+	if (eres.Error != "") {
+		fmt.Println("Error:", eres.Error)
+		os.Exit(1)
+	}
+
     err := json.Unmarshal(data, v)
     if (err != nil) {
         fmt.Println(err)
@@ -227,7 +240,7 @@ func GetPreviousBlock(account string) (string) {
     Unmarshal(a, &ahres)
 
     if (len(ahres.History) >= 1) {
-        return ahres.History[0].Hash // Previous block hash. Keep track of the last block for the account. 
+        return ahres.History[0].Hash // Previous block hash. Keep track of the last block for the account.
     } else {
         return ""
     }

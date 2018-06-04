@@ -1,20 +1,20 @@
 /*
  * Copyright (C) 2018 Keaton Bruce
  *
- * This file is part of NanoBots.
+ * This file is part of nano-prepowtx.
  *
- * NanoBots is free software: you can redistribute it and/or modify
+ * nano-prepowtx is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * NanoBots is distributed in the hope that it will be useful,
+ * nano-prepowtx is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with NanoBots. If not, see <http://www.gnu.org/licenses/>.
+ * along with nano-prepowtx. If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -48,7 +48,7 @@ import (
  */
 
 var Wallet string
-var NAccounts uint
+var NAccounts uint64
 // var NTransactions uint64
 
 var Accounts []string
@@ -56,7 +56,7 @@ var Balances []*big.Int
 var Total *big.Int
 
 // The default number of transactions for every account.
-var DefaultTPA uint
+var DefaultTPA uint64
 
 // The most recent block for every account.
 var Hashes [][]string
@@ -66,36 +66,37 @@ var Hashes [][]string
 // blks[account][block]
 var Blks [][]string
 
-var tCompute time.Duration
+// The time interval to the next attack measured in seconds.
+var tCompute int64
 var LastPoWMax uint64
 
 // var Uid *big.Int
 
 func main() {
     wallet := flag.String("wallet", "", "The wallet to sign/verify blocks")
-    nAccounts := flag.Uint("n_accounts", 100, "The number of accounts to user/generate")
-    // nTransactions := flag.Uint64("n_trans", 30000, "The number of transactions to generate and send")
+    nAccounts := flag.Uint64("n_accounts", 100, "The number of accounts to user/generate")
     flag.Parse()
 
     Wallet = *wallet
     NAccounts = *nAccounts
-    // NTransactions = *nTransactions
 
     fmt.Println("wallet:", Wallet)
     // fmt.Println("n_accounts:", NAccounts)
     // fmt.Println("n_trans:", NTransactions)
 
     // This is the starting Transactions Per Account.
-    // Usefull for allocating space to the initial Blks slice.
-    DefaultTPA  = uint(1000) / NAccounts
+    // Useful for allocating space to the initial Blks slice.
+    DefaultTPA  = uint64(1000) / NAccounts
 
     if (Wallet == "") {
         fmt.Println("Error: No wallet was provided.")
         os.Exit(1)
     }
 
-    // The total time to take to precompute a round of blocks.
-    tCompute = 4 * time.Hour
+    // The total time to take to precompute a round of blocks in minutes.
+    tCompute = int64((time.Duration(5) * time.Minute) / time.Second)
+
+	fmt.Println("tCompute in seconds:", tCompute)
 
     setupAccounts()
 
@@ -120,47 +121,44 @@ func main() {
     // For now, sync this number and coordinate attack.
     // For bootstrapping new nodes, they should attempt to connect to other nodes
     // and ask for the current tCompute (perhaps taking an average).
-    for count := 0;;count++ {
-        // if time.Now.Hours() < i * tCompute
-        // duration = (i * tCompute - time.Now) // This is the next time slot.
-        cTime := time.Now().UTC()
-        var nextTest time.Time
-        var timeToTest time.Duration
+    for count := int64(0);;count++ {
 
-        for i := 0.0; i * tCompute.Hours() <= 24.0; i++ {
-            if (float64(cTime.Hour()) < i * tCompute.Hours()) {
-                loc, _ := time.LoadLocation("UTC")
-                nextTest = time.Date(cTime.Year(), cTime.Month(), cTime.Day(), int(i * tCompute.Hours()), 0, 0, 0, loc)
-                timeToTest = nextTest.Sub(cTime)
-                break
-            }
-        }
-        fmt.Println("Next Attack Scheduled:", nextTest.Local().Format(time.UnixDate))
+		var cTime time.Time = time.Now()
+        var timePastTest time.Duration = time.Duration(cTime.Unix() % tCompute) * time.Second
+		var nextTest time.Time = cTime.Add((time.Duration(tCompute) * time.Second) - timePastTest)
+
+        fmt.Println("Next Attack Scheduled:", nextTest.Format(time.UnixDate))
 
         // Alternate between sending blocks and receiving blocks based on the count.
         go precomputeBlocks(naw, nMax, count, LastPoWMax, nextTest)
 
-        time.Sleep(timeToTest)
-        fmt.Println("\n---Scheduled Time Reached---")
+		select {
+		case message := <-naw:
+			if (message != "finished") {
+				// Some error
+				os.Exit(1)
+			}
+		case <-time.After(time.Until(nextTest)):
+			// Halt the PoW and begin processing transactions.
+			fmt.Println("\n---Scheduled Time Reached---")
+			naw <- "halt"
+			response := <-naw
+			if (response != "halted") {
+				// Some error
+				os.Exit(1)
+			}
+		}
 
-        // Halt the PoW and begin processing transactions.
-        naw <- "halt"
-
-        response := <-naw
-        if (response != "halted") {
-            // Some error
-            os.Exit(1)
-        }
         LastPoWMax, _ = strconv.ParseUint(<-naw, 10, 64)
-        processBlocks(LastPoWMax)
+        processBlocks(LastPoWMax, count)
     }
 }
 
 func setupAccounts() {
     // GET THE NUMBER OF ACCOUNTS FOR THE WALLET
-    nWalletAccounts := uint(0)
+    nWalletAccounts := uint64(0)
     Accounts = AccountList()
-    for i := uint(0); i < NAccounts; i++ {
+    for i := uint64(0); i < NAccounts; i++ {
         if (len(Accounts[i]) > 0) {
             nWalletAccounts++
         }
@@ -173,7 +171,7 @@ func setupAccounts() {
     }
 }
 
-func findFunds() (*big.Int, uint) {
+func findFunds() (*big.Int, uint64) {
     // FIND FUNDS
     Total = big.NewInt(0)
     var fakeBalances = GetBalances()
@@ -181,8 +179,8 @@ func findFunds() (*big.Int, uint) {
     Balances = make([]*big.Int, NAccounts)
     // Find the account with the most funds.
     max := big.NewInt(0)
-    var nMax uint
-    for i := uint(0); i < NAccounts; i++ {
+    var nMax uint64
+    for i := uint64(0); i < NAccounts; i++ {
         balance := big.NewInt(0)
         balance.SetString(fakeBalances[Accounts[i]].Balance, 10)
         Balances[i] = balance
@@ -197,7 +195,7 @@ func findFunds() (*big.Int, uint) {
     return max, nMax
 }
 
-func distributeFunds(max *big.Int, nMax uint) {
+func distributeFunds(max *big.Int, nMax uint64) {
     // DISTRIBUTE FUNDS OR EXIT FOR INSUFFICIENT FUNDS
     // minimum is NTransactions
     minimum := big.NewInt(0)
@@ -214,7 +212,7 @@ func distributeFunds(max *big.Int, nMax uint) {
 
     Hashes = make([][]string, NAccounts)
     Blks = make([][]string, NAccounts)
-    for i := uint(0); i < NAccounts; i++ {
+    for i := uint64(0); i < NAccounts; i++ {
         Blks[i] = make([]string, DefaultTPA)
         Hashes[i] = make([]string, DefaultTPA)
         // RecentHashes[i] = GetPreviousBlock(Accounts[i])
@@ -246,7 +244,7 @@ func distributeFunds(max *big.Int, nMax uint) {
                 elapsed := stop.Sub(start)
                 total += elapsed
                 count++
-                ETA = time.Duration((uint64(total) / count) * uint64(NAccounts - uint(k)))
+                ETA = time.Duration((uint64(total) / count) * uint64(NAccounts - uint64(k)))
              }
         }
         fmt.Println()
@@ -254,30 +252,34 @@ func distributeFunds(max *big.Int, nMax uint) {
     fmt.Println("---Finished Setting Up Accounts---")
 }
 
-func precomputeBlocks(naw chan string, nMax uint, iteration int, maximum uint64, nextTest time.Time) {
+func precomputeBlocks(naw chan string, nMax uint64, iteration int64, maximum uint64, nextTest time.Time) {
     // ITERATE OVER EACH ACCOUNT
     // CREATE BLOCKS
     var ETA time.Duration
-    var total time.Duration
-    var count uint64
+    var total time.Duration = 1
     var estimate uint64
-    fmt.Println("---Begin Precomputing PoW (Send or Receive Blocks)---")
+	if (iteration % 2 == 0) {
+		fmt.Println("---Begin Precomputing PoW (Send Blocks)---")
+	} else {
+		fmt.Println("---Begin Precomputing PoW (Receive Blocks)---")
+	}
     amount := big.NewInt(1)
     // Continue to produce blocks until the scheduled attack time.
     // Estimate how many blocks that will be.
-    for i := uint(0);; i++ {
+    for i := uint64(0);; i++ {
         // Accounts[i % NAccounts] = the account to process at the moment.
         k := i % NAccounts
         // iter is the 'round' for each account.
         iter := i / NAccounts
 
-        if i > uint(len(Blks[k])) * NAccounts {
-            fmt.Println("Copying block data, new size:", len(Blks[k]) + 1 * 2)
+		//fmt.Println(len(Blks[k]))
+        if i >= uint64(len(Blks[k]) - 1) * NAccounts {
+            fmt.Println("Reallocating slices from: ", len(Blks[k]), " to: ", (len(Blks[k]) + 1) * 2)
             // Increase the length of Blks and Hashes.
-            for j := uint(0); j < NAccounts; j++ {
+            for j := uint64(0); j < NAccounts; j++ {
                 // Create the new space.
-                b := make([]string, len(Blks[k]) + 1 * 2)
-                h := make([]string, len(Hashes[k]) + 1 * 2)
+                b := make([]string, (len(Blks[j]) + 1) * 2)
+                h := make([]string, (len(Hashes[j]) + 1) * 2)
                 // Copy the data into the bigger slices.
                 copy(b, Blks[j])
                 copy(h, Hashes[j])
@@ -287,45 +289,55 @@ func precomputeBlocks(naw chan string, nMax uint, iteration int, maximum uint64,
             }
         }
 
-        fmt.Print("\rBlock: ", count, "/", estimate, ", ", math.Floor((float64(count) / float64(estimate) * 1000)) / 10, "%")
+        fmt.Print("\rBlock: ", i, "/", estimate, ", ", math.Floor((float64(i) / float64(estimate) * 1000)) / 10, "%")
         fmt.Print(" ETA: ", ETA.String(), " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   \r")
         start := time.Now()
         if iteration % 2 == 0 {
-            var recentHash uint = 0
-            if iter > 0 {
-                recentHash = iter - 1
-            }
-            Hashes[k][iter], Blks[k][iter] = CreateSendBlock(Accounts[k], Accounts[(i + 1) % NAccounts], Balances[k].String(), amount.String(), Hashes[k][recentHash])
+			// Reserve Hashes[k][iter] for the receive blocks.
+            Hashes[k][iter + 1], Blks[k][iter + 1] = CreateSendBlock(Accounts[k], Accounts[(i + 1) % NAccounts], Balances[k].String(), amount.String(), Hashes[k][iter])
             Balances[k].Sub(Balances[k], amount)
         } else {
             if uint64(i) > maximum {
+				fmt.Println()
                 fmt.Println("---Reached the maximum amount of blocks to receive---")
+				naw <- "finished"
+                naw <- strconv.FormatUint(i, 10)
                 return
             }
             // The number should be so large that it will resolve to empty string.
             // The transition between creating send blocks and creating receive blocks
             // requires a lookup to know exactly what the most recent hash was for each account.
             // This is because the interupted process before this will probably be incomplete.
-            var recentHash uint = uint(len(Hashes[k]))
+			/*
+            var recentHash uint64 = uint64(len(Hashes[k])) - 1
             if iter > 0 {
                 recentHash = iter - 1
             }
-            Hashes[k][iter], Blks[k][iter] = CreateReceiveBlock(Accounts[k], Hashes[(i - 1) % NAccounts][iter], Hashes[k][recentHash])
+			if (k == 0) {
+				if (iter > 0) {
+						Hashes[k][recentHash], Blks[k][recentHash] = CreateReceiveBlock(Accounts[k], Hashes[NAccounts - 1][iter], Hashes[k][iter])
+						Balances[k].Add(Balances[k], amount)
+				} else {
+						// There is nothing to receive because no account has sent anything.
+				}
+			} else {
+			*/
+            Hashes[k][iter], Blks[k][iter] = CreateReceiveBlock(Accounts[k], Hashes[(i - 1) % NAccounts][iter + 1], Hashes[k][iter])
             Balances[k].Add(Balances[k], amount)
+			//}
         }
         stop := time.Now()
         elapsed := stop.Sub(start)
         total += elapsed
-        count++
-        estimate = uint64(i) + uint64((time.Until(nextTest) / time.Duration(uint64(total) / count)))
-        ETA = time.Duration((uint64(total) / count) * (estimate - count))
+        estimate = uint64(i) + uint64((time.Until(nextTest) / time.Duration(uint64(total) / uint64(i + 1))))
+        ETA = time.Duration((uint64(total) / uint64(i + 1)) * (estimate - uint64(i + 1)))
 
         select {
         case msg := <-naw:
             if (msg == "halt") {
                 naw <- "halted"
                 fmt.Println("---Halting Precomputation---")
-                naw <- strconv.FormatUint(count, 10)
+                naw <- strconv.FormatUint(i, 10)
                 return
             }
         default:
@@ -335,30 +347,40 @@ func precomputeBlocks(naw chan string, nMax uint, iteration int, maximum uint64,
     fmt.Println("---Finished Precomputing Blocks---")
 }
 
-func processBlocks(max uint64) {
+func processBlocks(max uint64, iteration int64) {
     // PROCESS BLOCKS
     var ETA time.Duration
-    var total time.Duration
-    var count uint64
+    var total time.Duration = 1
     fmt.Println("---Begin Stress Test (Publishing Blocks)---")
-    for i := uint(0); i < DefaultTPA; i++ {
-        for k, _ := range Accounts {
-            if (count > max) {
-                fmt.Println("\n---Finished Processing Blocks---")
-                return
-            }
-            fmt.Print("\rBlock: ", count, "/", max, ", ", math.Floor((float64(count) / float64(max) * 1000)) / 10, "%")
-            fmt.Print(" ETA: ", ETA.String(), " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   \r")
-            start := time.Now()
-            Hashes[k][count] = ProcessBlock(Blks[k][i])
-            stop := time.Now()
-            elapsed := stop.Sub(start)
-            total += elapsed
-            count++
-            ETA = time.Duration((uint64(total) / count) * (max - count))
-        }
+    for i := uint64(0); i < max; i++ {
+	    // Accounts[i % NAccounts] = the account to process at the moment.
+        k := i % NAccounts
+        // iter is the 'round' for each account.
+        iter := i / NAccounts
+
+        fmt.Print("\rBlock: ", i, "/", max, ", ", math.Floor((float64(i) / float64(max) * 1000)) / 10, "%")
+        fmt.Print(" ETA: ", ETA.String(), " Finish: ", ((time.Now()).Add(ETA)).Format(time.UnixDate), "   \r")
+        start := time.Now()
+		if (iteration % 2 == 0) {
+			Hashes[k][iter] = ProcessBlock(Blks[k][iter + 1])
+		} else {
+			if (k == 0 && iter == 0) {
+				// Nothing to process.
+			} else {
+				var recentHash uint64 = uint64(len(Hashes[k])) - 1
+				if iter > 0 {
+					recentHash = iter - 1
+				}
+				Hashes[k][iter] = ProcessBlock(Blks[k][recentHash])
+			}
+		}
+        stop := time.Now()
+        elapsed := stop.Sub(start)
+        total += elapsed
+        ETA = time.Duration((uint64(total) / (i + 1)) * (max - (i + 1)))
     }
     fmt.Println()
+	fmt.Println("\n---Finished Processing Blocks---")
 }
 
 func receiveAllPending() {
@@ -472,7 +494,7 @@ func request(address, action string) {
 
 func handleConnection(conn net.Conn) {
     // This function handles requests.
-    // It will read the message header, determine the action to take, 
+    // It will read the message header, determine the action to take,
     // and then return that information back to the peer.
 
     fmt.Printf("...Connection Established to %s...\n", conn.RemoteAddr())
@@ -543,4 +565,3 @@ func receivePeers(dec *gob.Decoder) {
     }
     pLock.Unlock()
 }
-
